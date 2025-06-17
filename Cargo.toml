@@ -1,0 +1,13 @@
+[package]
+name = "md_ratatui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui = "0.29.0"
+tokio = "1.45.1"
+md_hardware = { path = "./crates/md_hardware" }
+tui-input = "0.12.1"
+color-eyre = "0.6.5"
+crossterm = "0.29.0"
+sysinfo = "0.35.2"
