@@ -1,23 +1,22 @@
-use std::{
-    io, time::Instant
-};
+use std::{io, time::Instant};
 
+use color_eyre::owo_colors::DynColor;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use md_hardware::{CpuExplosion, CpuUsage, SystemUsage};
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span, Text},
     widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph},
-    Frame, Terminal,
 };
-use tokio::{time::Duration, task::JoinHandle};
+use tokio::{task::JoinHandle, time::Duration};
 
 enum Mode {
     Input,
@@ -52,7 +51,7 @@ struct App {
     cpu_refresh_interval: Duration,         // Interval for CPU refresh
     cpu_info_cached: Vec<CpuUsage>,         // Cache for CPU info (now custom CpuInfo)
     total_logical_cores: usize,             // Total logical cores available
-    selected_cpu_count: usize,              // Number of CPU cores selected by the user
+    selected_cpu_count: String,             // Number of CPU cores selected by the user
     stress_test: md_hardware::CpuExplosion,
     stress_test_handle: Option<JoinHandle<u64>>,
 }
@@ -84,9 +83,9 @@ impl App {
             cpu_refresh_interval: Duration::from_secs(1), // Refresh CPU every 1 second
             cpu_info_cached: initial_cpus,                // Store initial CPU info
             total_logical_cores,                          // Initialize with actual core count
-            selected_cpu_count: 1,                        // Default to 1 selected core
+            selected_cpu_count: String::new(),            // Default to 1 selected core
             stress_test: md_hardware::CpuExplosion::new(),
-            stress_test_handle: None
+            stress_test_handle: None,
         }
     }
 
@@ -98,16 +97,16 @@ impl App {
         self.start_time = None;
         self.total_duration_secs = 0;
         self.elapsed_secs = 0;
-        self.current_input_focus = InputFocusElement::ValueInput; // Reset focus
-        self.finished_popup_selected_option = PopupOption::RunAgain; // Reset popup selection
+        self.current_input_focus = InputFocusElement::ValueInput;
+        self.finished_popup_selected_option = PopupOption::RunAgain;
         self.stress_test_handle = None;
         self.stress_test = CpuExplosion::new();
-                                                                     // Re-initialize SystemUsage to clear previous data and get fresh system info
+        // Re-initialize SystemUsage to clear previous data and get fresh system info
         self.system_usage = SystemUsage::new();
         let (_, initial_cpus) = self.system_usage.get_cpu_info();
         self.cpu_info_cached = initial_cpus;
         self.last_cpu_refresh = Instant::now();
-        self.selected_cpu_count = 1; // Reset selected CPU count
+        self.selected_cpu_count = String::new(); // Reset selected CPU count
     }
 
     /// Parses the input text and selected unit to set the total duration.
@@ -120,13 +119,15 @@ impl App {
             self.start_time = Some(Instant::now());
             self.elapsed_secs = 0;
             let duration_for_stress_test = self.total_duration_secs;
-            let cores_for_stress_test = self.selected_cpu_count; // Use selected_cpu_count for the test
+            let cores_for_stress_test: usize = self.selected_cpu_count.parse().unwrap(); // Use selected_cpu_count for the test
             let stress_tester = self.stress_test.clone(); // Clone if CpuExplosion can be cloned, or pass by Arc/Rc
 
             self.stress_test_handle = Some(tokio::spawn(async move {
-                stress_tester.stress_test_cpu(duration_for_stress_test, cores_for_stress_test).await
+                stress_tester
+                    .stress_test_cpu(duration_for_stress_test, cores_for_stress_test)
+                    .await
             }));
-           self.mode = Mode::Chart;
+            self.mode = Mode::Chart;
         } else {
             self.input_text = "Invalid input".to_string(); // Simple error feedback
         }
@@ -189,12 +190,10 @@ fn ui_input_mode(frame: &mut Frame, app: &mut App) {
         TimeUnit::Seconds => "Selected: Seconds",
         TimeUnit::Minutes => "Selected: Minutes",
     };
-    let selected_unit_paragraph = Paragraph::new(selected_unit_name)
-        .style(Style::default().fg(Color::Yellow))
-        .alignment(ratatui::layout::Alignment::Center);
-    frame.render_widget(selected_unit_paragraph, chunks[0]); // Use the new chunk for this
+    let selected_unit_paragraph =
+        Paragraph::new(selected_unit_name).style(Style::default().fg(Color::Yellow));
+    frame.render_widget(selected_unit_paragraph, chunks[0]);
 
-    // Input field (Duration)
     let input_block_style = if matches!(app.current_input_focus, InputFocusElement::ValueInput) {
         Style::default()
             .fg(Color::Cyan)
@@ -255,19 +254,32 @@ fn ui_input_mode(frame: &mut Frame, app: &mut App) {
         app.current_input_focus,
         InputFocusElement::CpuCountSelection
     ) {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
+        if app.selected_cpu_count.len() > 0
+            && app.selected_cpu_count.parse::<usize>().unwrap() > app.total_logical_cores
+        {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        }
     } else {
-        Style::default().fg(Color::Reset)
+        if app.selected_cpu_count.len() > 0
+            && app.selected_cpu_count.parse::<usize>().unwrap() > app.total_logical_cores
+        {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Reset)
+        }
     };
 
-    let cpu_count_block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!("Selected Cores (1-{})", app.total_logical_cores));
-    let cpu_count_paragraph = Paragraph::new(app.selected_cpu_count.to_string())
+    let cpu_count_block = Block::default().borders(Borders::ALL).title(format!(
+        "Selected Cores (Total number of logical cores {})",
+        app.total_logical_cores
+    ));
+
+    let cpu_count_paragraph = Paragraph::new(app.selected_cpu_count.as_str())
         .style(cpu_count_block_style)
-        .alignment(ratatui::layout::Alignment::Center)
         .block(cpu_count_block);
     frame.render_widget(cpu_count_paragraph, chunks[3]); // Adjusted chunk index
 
@@ -299,6 +311,16 @@ fn ui_input_mode(frame: &mut Frame, app: &mut App) {
         frame.set_cursor_position(Position {
             x: chunks[0].x + app.input_text.len() as u16 + 1,
             y: chunks[0].y + 5,
+        });
+    }
+
+    if matches!(
+        app.current_input_focus,
+        InputFocusElement::CpuCountSelection
+    ) {
+        frame.set_cursor_position(Position {
+            x: chunks[0].x + app.selected_cpu_count.len() as u16 + 1,
+            y: chunks[0].y + 8,
         });
     }
 }
@@ -333,12 +355,14 @@ fn ui_chart_mode(frame: &mut Frame, app: &mut App) {
     let max_x = app.total_duration_secs as f64;
     let max_y = 100.0; // Assuming chart values won't exceed 30 much based on our sine example
 
-    let datasets = vec![Dataset::default()
-        .name("Value over time")
-        .marker(symbols::Marker::Dot)
-        .style(Style::default().fg(Color::Green))
-        .graph_type(GraphType::Line)
-        .data(&app.chart_data)];
+    let datasets = vec![
+        Dataset::default()
+            .name("Value over time")
+            .marker(symbols::Marker::Dot)
+            .style(Style::default().fg(Color::Green))
+            .graph_type(GraphType::Line)
+            .data(&app.chart_data),
+    ];
 
     let chart = Chart::new(datasets)
         .block(chart_block)
@@ -507,7 +531,6 @@ fn ui_finished_popup_mode(frame: &mut Frame, app: &mut App) {
     frame.render_widget(exit_text, popup_chunks[4]);
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
@@ -533,38 +556,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    // Universal quit handling for 'q', 'Q', and Ctrl+C
                     if key.code == KeyCode::Char('q')
                         || key.code == KeyCode::Char('Q')
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL))
                     {
                         running = false;
-                        if let Some(val) = &app.stress_test_handle{
+                        if let Some(val) = &app.stress_test_handle {
                             val.abort();
                         }
                     } else {
                         match app.mode {
                             Mode::Input => match key.code {
-                                KeyCode::Char(c) => {
-                                    // Only allow digits if focus is on value input
-                                    if matches!(
-                                        app.current_input_focus,
-                                        InputFocusElement::ValueInput
-                                    ) && c.is_ascii_digit()
-                                    {
-                                        app.input_text.push(c);
+                                KeyCode::Char(c) => match app.current_input_focus {
+                                    InputFocusElement::ValueInput => {
+                                        if c.is_numeric() {
+                                            app.input_text.push(c);
+                                        }
                                     }
-                                }
-                                KeyCode::Backspace => {
-                                    // Only allow backspace if focus is on value input
-                                    if matches!(
-                                        app.current_input_focus,
-                                        InputFocusElement::ValueInput
-                                    ) {
+                                    InputFocusElement::CpuCountSelection => {
+                                        if c.is_numeric() && app.selected_cpu_count.len() <= 2 {
+                                            app.selected_cpu_count.push(c);
+                                        }
+                                    }
+                                    InputFocusElement::UnitSelection => {}
+                                    InputFocusElement::OkButton => {}
+                                },
+                                KeyCode::Backspace => match app.current_input_focus {
+                                    InputFocusElement::ValueInput => {
                                         app.input_text.pop();
                                     }
-                                }
+                                    InputFocusElement::CpuCountSelection => {
+                                        app.selected_cpu_count.pop();
+                                    }
+                                    InputFocusElement::UnitSelection => {}
+                                    InputFocusElement::OkButton => {}
+                                },
                                 KeyCode::Tab => {
                                     app.current_input_focus = match app.current_input_focus {
                                         InputFocusElement::ValueInput => {
@@ -592,15 +619,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             TimeUnit::Minutes => TimeUnit::Seconds,
                                         };
                                     }
-
-                                    if matches!(
-                                        app.current_input_focus,
-                                        InputFocusElement::CpuCountSelection
-                                    ) {
-                                        if app.selected_cpu_count > 1 {
-                                            app.selected_cpu_count -= 1;
-                                        }
-                                    }
                                 }
                                 KeyCode::Up | KeyCode::Right => {
                                     if matches!(
@@ -612,34 +630,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             TimeUnit::Minutes => TimeUnit::Seconds,
                                         };
                                     }
-
-                                    if matches!(
-                                        app.current_input_focus,
-                                        InputFocusElement::CpuCountSelection
-                                    ) {
-                                        if app.selected_cpu_count < app.total_logical_cores {
-                                            app.selected_cpu_count += 1;
-                                        }
-                                    }
                                 }
-                                KeyCode::Enter => {
-                                    match app.current_input_focus {
-                                        InputFocusElement::ValueInput => {
-                                            app.current_input_focus =
-                                                InputFocusElement::UnitSelection;
-                                        }
-                                        InputFocusElement::UnitSelection => {
-                                            app.current_input_focus =
-                                                InputFocusElement::CpuCountSelection;
-                                        }
-                                        InputFocusElement::CpuCountSelection => {
-                                            app.current_input_focus = InputFocusElement::OkButton;
-                                        }
-                                        InputFocusElement::OkButton => {
-                                            app.set_total_duration();
-                                        }
+                                KeyCode::Enter => match app.current_input_focus {
+                                    InputFocusElement::ValueInput => {
+                                        app.current_input_focus = InputFocusElement::UnitSelection;
                                     }
-                                }
+                                    InputFocusElement::UnitSelection => {
+                                        app.current_input_focus =
+                                            InputFocusElement::CpuCountSelection;
+                                    }
+                                    InputFocusElement::CpuCountSelection => {
+                                        app.current_input_focus = InputFocusElement::OkButton;
+                                    }
+                                    InputFocusElement::OkButton => {
+                                        app.set_total_duration();
+                                    }
+                                },
                                 _ => {}
                             },
                             Mode::Chart => {
@@ -664,7 +670,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 KeyCode::Esc => {
                                     running = false;
-                                    if let Some(val) = &app.stress_test_handle{
+                                    if let Some(val) = &app.stress_test_handle {
                                         val.abort();
                                     }
                                 }
@@ -676,7 +682,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        if let Some(handle) = &app.stress_test_handle {    
+        if let Some(handle) = &app.stress_test_handle {
             if handle.is_finished() && running {
                 app.stress_test_handle = None;
                 app.mode = Mode::Finished;
